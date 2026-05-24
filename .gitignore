@@ -1,0 +1,23 @@
+# Bulk data — regenerable from the API, do not commit
+videos/
+pages/
+catalog.json
+survey.json
+videsaur.db
+videsaur.db-wal
+videsaur.db-shm
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.uv/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Tool-local metadata
+.serena/
