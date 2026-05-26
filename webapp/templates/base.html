@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>videosaurous</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <meta name="description" content="Local meme library for videsaur.com">
+    <meta name="theme-color" content="#09090b">
+
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        /* tailwind's line-clamp utilities for 2-line meme titles */
+        .line-clamp-2 {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        /* htmx loading indicator */
+        .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+        .htmx-request .htmx-indicator { opacity: 1; }
+    </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+
+<header class="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur sticky top-0 z-20">
+    <div class="px-4 sm:px-6 py-3 flex items-center gap-4">
+        <h1 class="text-lg sm:text-xl font-bold whitespace-nowrap">
+            🦖 <span class="hidden sm:inline">videosaurous</span>
+        </h1>
+
+        <form class="flex-1 max-w-2xl">
+            <input
+                type="search"
+                name="q"
+                placeholder="search memes..."
+                value="{{ q }}"
+                autofocus
+                class="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-md
+                       focus:outline-none focus:border-emerald-500 placeholder-zinc-500"
+                hx-get="/grid"
+                hx-trigger="input changed delay:250ms, search"
+                hx-target="#grid"
+                hx-swap="innerHTML"
+                hx-include="[name='category'],[name='language'],[name='per_page']"
+                hx-indicator="#search-spinner"
+            >
+        </form>
+
+        <span class="htmx-indicator text-emerald-400 text-sm" id="search-spinner">…</span>
+
+        {# Per-page selector. On change, fetch a fresh grid (page=0 implicit) #}
+        <select
+            name="per_page"
+            class="bg-zinc-900 border border-zinc-800 rounded-md px-2 py-1.5 text-sm
+                   focus:outline-none focus:border-emerald-500"
+            hx-get="/grid"
+            hx-trigger="change"
+            hx-target="#grid"
+            hx-swap="innerHTML"
+            hx-include="[name='q'],[name='category'],[name='language']"
+            title="how many tiles per page"
+        >
+            {% for opt in [48, 100, 500, 1000, 10000] %}
+            <option value="{{ opt }}" {% if per_page == opt %}selected{% endif %}>
+                {% if opt >= 10000 %}all{% else %}{{ opt }}{% endif %}
+            </option>
+            {% endfor %}
+        </select>
+
+        <span class="text-xs sm:text-sm text-zinc-400 whitespace-nowrap">
+            {{ total }} memes
+        </span>
+    </div>
+</header>
+
+<main class="flex">
+    {% block content %}{% endblock %}
+</main>
+
+<div id="modal"></div>
+
+</body>
+</html>

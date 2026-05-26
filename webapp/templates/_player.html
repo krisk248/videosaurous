@@ -1,0 +1,91 @@
+{# Modal video player. Alpine.js handles open/close + ESC + arrow keys.
+   Pre-prev/next IDs come from the server so navigation respects current filters. #}
+
+{# Helper: build the query string for prev/next URLs while preserving filters #}
+{% set qs %}{% if q %}&q={{ q|urlencode }}{% endif %}{% if category %}&category={{ category|urlencode }}{% endif %}{% if language %}&language={{ language|urlencode }}{% endif %}{% endset %}
+
+<div
+    x-data="{ open: true }"
+    x-show="open"
+    x-init="document.body.style.overflow='hidden'"
+    x-cloak
+    @keydown.escape.window="open=false; document.body.style.overflow=''; setTimeout(()=>$el.remove(), 200)"
+    @keydown.arrow-right.window.prevent="document.getElementById('next-btn')?.click()"
+    @keydown.arrow-left.window.prevent="document.getElementById('prev-btn')?.click()"
+    @click.self="open=false; document.body.style.overflow=''; setTimeout(()=>$el.remove(), 200)"
+    class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-3 sm:p-6"
+>
+    <div class="bg-zinc-900 rounded-lg max-w-3xl w-full overflow-hidden shadow-2xl" @click.stop>
+
+        <div class="flex items-start justify-between px-4 py-3 border-b border-zinc-800 gap-3">
+            <div class="min-w-0">
+                <h3 class="font-medium truncate flex items-center gap-2">
+                    {% if video.dup_count > 1 %}
+                    <span class="text-[10px] bg-amber-500 text-black px-1.5 py-0.5 rounded-full
+                                 font-bold whitespace-nowrap"
+                          title="{{ video.dup_count }} copies of this exact file exist">
+                        🔁 ×{{ video.dup_count }}
+                    </span>
+                    {% endif %}
+                    <span class="truncate">{{ video.name or "untitled" }}</span>
+                </h3>
+                <p class="text-xs text-zinc-500 mt-0.5">
+                    id={{ video.id }} · {{ video.views or 0 }} views
+                    {% if video.languages %}· {{ video.languages | join(", ") }}{% endif %}
+                </p>
+            </div>
+            <button @click="open=false; document.body.style.overflow=''; setTimeout(()=>$el.closest('[x-data]').remove(), 200)"
+                    class="text-zinc-400 hover:text-white text-2xl leading-none px-1"
+                    title="close (esc)">×</button>
+        </div>
+
+        <video src="/media/{{ video.id }}"
+               controls autoplay loop
+               class="w-full bg-black max-h-[70vh]"></video>
+
+        {# Prev / Next bar. Buttons are disabled when there's no neighbour. #}
+        <div class="flex items-center justify-between px-4 py-2 border-t border-zinc-800 bg-zinc-950/50">
+            {% if prev_id %}
+            <button id="prev-btn"
+                    hx-get="/video/{{ prev_id }}?_={{ prev_id }}{{ qs }}"
+                    hx-target="#modal"
+                    hx-swap="innerHTML"
+                    class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-sm transition flex items-center gap-1"
+                    title="previous (← arrow)">
+                <span>←</span> <span class="hidden sm:inline">prev</span>
+            </button>
+            {% else %}
+            <span class="px-3 py-1.5 text-zinc-600 text-sm">← start</span>
+            {% endif %}
+
+            <span class="text-[11px] text-zinc-500 hidden sm:inline">use ← → arrows</span>
+
+            {% if next_id %}
+            <button id="next-btn"
+                    hx-get="/video/{{ next_id }}?_={{ next_id }}{{ qs }}"
+                    hx-target="#modal"
+                    hx-swap="innerHTML"
+                    class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded text-sm transition flex items-center gap-1"
+                    title="next (→ arrow)">
+                <span class="hidden sm:inline">next</span> <span>→</span>
+            </button>
+            {% else %}
+            <span class="px-3 py-1.5 text-zinc-600 text-sm">end →</span>
+            {% endif %}
+        </div>
+
+        {% if video.categories %}
+        <div class="px-4 py-2 border-t border-zinc-800 flex flex-wrap gap-1.5">
+            {% for c in video.categories %}
+            <span class="text-[11px] bg-zinc-800 text-zinc-300 px-2 py-0.5 rounded">{{ c }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if video.description %}
+        <p class="px-4 py-3 text-sm text-zinc-400 border-t border-zinc-800">
+            {{ video.description }}
+        </p>
+        {% endif %}
+    </div>
+</div>

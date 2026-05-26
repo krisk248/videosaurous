@@ -1,0 +1,68 @@
+{# Just the grid + load-more button. Returned by HTMX on search/filter. #}
+
+{% if not videos %}
+<div class="text-center text-zinc-500 py-16">
+    <p class="text-lg">no memes match this filter</p>
+    <p class="text-xs mt-2">try clearing search or pick a different category</p>
+</div>
+{% else %}
+
+<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 sm:gap-3">
+    {% for v in videos %}
+    <button
+        type="button"
+        class="group relative aspect-video bg-zinc-900 rounded-md overflow-hidden
+               hover:ring-2 hover:ring-emerald-500 text-left transition focus:outline-none
+               focus:ring-2 focus:ring-emerald-500"
+        hx-get="/video/{{ v.id }}"
+        hx-target="#modal"
+        hx-swap="innerHTML"
+        hx-include="[name='q'],[name='category'],[name='language']"
+        title="{{ v.name }}{% if v.dup_count > 1 %} — {{ v.dup_count }} copies exist{% endif %}"
+    >
+        {% if v.thumb_url %}
+        <img src="{{ v.thumb_url }}"
+             loading="lazy"
+             alt=""
+             class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+             onerror="this.style.display='none'">
+        {% else %}
+        <div class="w-full h-full flex items-center justify-center text-zinc-700 text-xs">
+            no thumb
+        </div>
+        {% endif %}
+
+        {# Duplicate marker — shows on tiles whose SHA256 is shared with others #}
+        {% if v.dup_count > 1 %}
+        <span class="absolute top-1 right-1 bg-amber-500 text-black text-[10px] font-bold
+                     px-1.5 py-0.5 rounded-full shadow z-10 pointer-events-none">
+            🔁 ×{{ v.dup_count }}
+        </span>
+        {% endif %}
+
+        <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/70 to-transparent
+                    p-1.5 pt-6">
+            <p class="text-[11px] sm:text-xs leading-tight line-clamp-2 text-white">
+                {{ v.name or "untitled" }}
+            </p>
+        </div>
+    </button>
+    {% endfor %}
+</div>
+
+{# Load-more button uses HTMX to fetch the NEXT page and append it #}
+{% set shown = (page + 1) * per_page %}
+{% if total > shown %}
+<div class="flex justify-center mt-6" id="load-more">
+    <button
+        type="button"
+        class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md text-sm transition"
+        hx-get="/grid?page={{ page + 1 }}&per_page={{ per_page }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if category %}&category={{ category|urlencode }}{% endif %}{% if language %}&language={{ language|urlencode }}{% endif %}"
+        hx-target="#load-more"
+        hx-swap="outerHTML"
+    >
+        load more ({{ total - shown }} remaining)
+    </button>
+</div>
+{% endif %}
+{% endif %}

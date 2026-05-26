@@ -1,0 +1,19 @@
+services:
+  webapp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: videosaurous-web
+    ports:
+      # HOST:CONTAINER — only change the HOST side if 8000 is busy
+      - "10000:8000"
+    volumes:
+      # mount the data files read-only — container can read DB + videos
+      # but can't accidentally modify them
+      - ./videsaur.db:/app/videsaur.db:ro
+      - ./videos:/app/videos:ro
+
+      # mount the code itself so edits to webapp/ trigger hot-reload
+      # without rebuilding the image
+      - ./webapp:/app/webapp:ro
+    restart: unless-stopped
