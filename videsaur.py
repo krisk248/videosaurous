@@ -14,6 +14,7 @@ Commands:
   init              create DB, import catalog.json + videos/, hash all files
   sync              refetch API, diff against DB, download new, mark removed
   verify            re-hash every file, detect corruption + missing + orphans
+  probe             run ffprobe on every file, save codec/format metadata
   dedupe            find SHA256 duplicates across video IDs
   stats             counts, sizes, recent sync history
   list              list videos with filters (--missing, --removed, --category)
@@ -169,6 +170,33 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_video ON events(video_id);
 CREATE INDEX IF NOT EXISTS idx_events_when ON events(occurred_at);
+
+CREATE TABLE IF NOT EXISTS video_probes (
+    video_id            INTEGER PRIMARY KEY,
+    container_format    TEXT,
+    duration_seconds    REAL,
+    bit_rate            INTEGER,
+    has_video           INTEGER,
+    has_audio           INTEGER,
+    video_codec         TEXT,
+    video_profile       TEXT,
+    video_level         INTEGER,
+    width               INTEGER,
+    height              INTEGER,
+    pixel_format        TEXT,
+    avg_frame_rate      TEXT,
+    audio_codec         TEXT,
+    audio_sample_rate   INTEGER,
+    audio_channels      INTEGER,
+    probe_status        TEXT,
+    probe_error         TEXT,
+    probed_at           TEXT NOT NULL,
+    raw_json            TEXT,
+    FOREIGN KEY (video_id) REFERENCES videos(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_probes_codec ON video_probes(video_codec);
+CREATE INDEX IF NOT EXISTS idx_probes_status ON video_probes(probe_status);
 """
 
 
@@ -888,6 +916,203 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# probe command (ffprobe codec/format survey)
+# ---------------------------------------------------------------------------
+
+def _ffprobe_json(path: Path) -> tuple[str, dict | None, str | None]:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json",
+             "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return "error", None, (r.stderr or "ffprobe failed").strip()[:300]
+        return "ok", json.loads(r.stdout), None
+    except subprocess.TimeoutExpired:
+        return "error", None, "timeout"
+    except Exception as e:
+        return "error", None, str(e)[:300]
+
+
+def _parse_probe(data: dict) -> dict:
+    fmt = data.get("format") or {}
+    streams = data.get("streams") or []
+    vid = next((s for s in streams if s.get("codec_type") == "video"), None) or {}
+    aud = next((s for s in streams if s.get("codec_type") == "audio"), None) or {}
+
+    def _int(x: Any) -> int | None:
+        try:
+            return int(x) if x is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    def _float(x: Any) -> float | None:
+        try:
+            return float(x) if x is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    return {
+        "container_format": fmt.get("format_name"),
+        "duration_seconds": _float(fmt.get("duration")),
+        "bit_rate": _int(fmt.get("bit_rate")),
+        "has_video": 1 if vid else 0,
+        "has_audio": 1 if aud else 0,
+        "video_codec": vid.get("codec_name"),
+        "video_profile": vid.get("profile"),
+        "video_level": _int(vid.get("level")),
+        "width": _int(vid.get("width")),
+        "height": _int(vid.get("height")),
+        "pixel_format": vid.get("pix_fmt"),
+        "avg_frame_rate": vid.get("avg_frame_rate"),
+        "audio_codec": aud.get("codec_name"),
+        "audio_sample_rate": _int(aud.get("sample_rate")),
+        "audio_channels": _int(aud.get("channels")),
+    }
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    """Run ffprobe on every video, store codec/format details in video_probes."""
+    if not HAS_FFPROBE:
+        print("ffprobe not found — install it first: sudo dnf install ffmpeg",
+              file=sys.stderr)
+        return 1
+    conn = db_open()
+
+    where = "WHERE local_path IS NOT NULL"
+    if not args.full:
+        where += (" AND id NOT IN (SELECT video_id FROM video_probes "
+                  "WHERE probe_status = 'ok')")
+    rows = list(conn.execute(f"SELECT id, local_path FROM videos {where}"))
+    print(f"probing {len(rows)} files (full={args.full}, workers={args.workers})")
+    if not rows:
+        print("nothing to do.")
+        return 0
+
+    started = time.time()
+    counts = {"ok": 0, "no-video": 0, "no-audio": 0, "error": 0}
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        future_to_row = {pool.submit(_ffprobe_json, ROOT / r["local_path"]): r
+                         for r in rows}
+        for i, fut in enumerate(future_to_row, 1):
+            r = future_to_row[fut]
+            status, data, err = fut.result()
+            if status == "ok" and data:
+                p = _parse_probe(data)
+                if p["has_video"] == 0:
+                    counts["no-video"] += 1
+                    probe_status = "no-video"
+                elif p["has_audio"] == 0:
+                    counts["no-audio"] += 1
+                    probe_status = "no-audio"
+                else:
+                    counts["ok"] += 1
+                    probe_status = "ok"
+                conn.execute(
+                    "INSERT OR REPLACE INTO video_probes "
+                    "(video_id, container_format, duration_seconds, bit_rate, "
+                    "has_video, has_audio, video_codec, video_profile, "
+                    "video_level, width, height, pixel_format, avg_frame_rate, "
+                    "audio_codec, audio_sample_rate, audio_channels, "
+                    "probe_status, probe_error, probed_at, raw_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (r["id"], p["container_format"], p["duration_seconds"],
+                     p["bit_rate"], p["has_video"], p["has_audio"],
+                     p["video_codec"], p["video_profile"], p["video_level"],
+                     p["width"], p["height"], p["pixel_format"],
+                     p["avg_frame_rate"], p["audio_codec"],
+                     p["audio_sample_rate"], p["audio_channels"],
+                     probe_status, None, now_utc(),
+                     json.dumps(data, ensure_ascii=False)),
+                )
+            else:
+                counts["error"] += 1
+                conn.execute(
+                    "INSERT OR REPLACE INTO video_probes "
+                    "(video_id, probe_status, probe_error, probed_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (r["id"], "error", err, now_utc()),
+                )
+            if i % 200 == 0:
+                conn.commit()
+                rate = i / (time.time() - started)
+                print(f"  {i}/{len(rows)} probed  ({rate:.1f}/s)  {counts}")
+    conn.commit()
+
+    print(f"\nprobe done in {time.time()-started:.1f}s   {counts}\n")
+
+    print("=== video codec × profile distribution ===")
+    for row in conn.execute(
+        "SELECT video_codec, video_profile, COUNT(*) c FROM video_probes "
+        "WHERE has_video = 1 "
+        "GROUP BY video_codec, video_profile ORDER BY c DESC"
+    ):
+        print(f"  {row['c']:>5}  {(row['video_codec'] or 'NONE'):<10}  "
+              f"{row['video_profile'] or '—'}")
+
+    print("\n=== audio codec distribution ===")
+    for row in conn.execute(
+        "SELECT audio_codec, COUNT(*) c FROM video_probes "
+        "WHERE has_audio = 1 GROUP BY audio_codec ORDER BY c DESC"
+    ):
+        print(f"  {row['c']:>5}  {row['audio_codec'] or 'NONE'}")
+
+    print("\n=== container format distribution ===")
+    for row in conn.execute(
+        "SELECT container_format, COUNT(*) c FROM video_probes "
+        "WHERE probe_status IN ('ok','no-audio','no-video') "
+        "GROUP BY container_format ORDER BY c DESC"
+    ):
+        print(f"  {row['c']:>5}  {row['container_format']}")
+
+    print("\n=== pixel format distribution ===")
+    for row in conn.execute(
+        "SELECT pixel_format, COUNT(*) c FROM video_probes "
+        "WHERE has_video = 1 GROUP BY pixel_format ORDER BY c DESC"
+    ):
+        print(f"  {row['c']:>5}  {row['pixel_format']}")
+
+    print("\n=== resolution buckets ===")
+    for row in conn.execute(
+        "SELECT CASE "
+        "  WHEN height IS NULL THEN 'unknown' "
+        "  WHEN height < 360 THEN '<360p' "
+        "  WHEN height < 480 THEN '360p' "
+        "  WHEN height < 720 THEN '480p' "
+        "  WHEN height < 1080 THEN '720p' "
+        "  WHEN height < 1440 THEN '1080p' "
+        "  ELSE '1440p+' END AS bucket, COUNT(*) c "
+        "FROM video_probes WHERE has_video = 1 GROUP BY bucket ORDER BY c DESC"
+    ):
+        print(f"  {row['c']:>5}  {row['bucket']}")
+
+    nv = list(conn.execute(
+        "SELECT v.id, v.name FROM videos v JOIN video_probes p "
+        "ON v.id = p.video_id WHERE p.has_video = 0 LIMIT 20"
+    ))
+    if nv:
+        print(f"\n=== files with NO video stream (first 20) ===")
+        for r in nv:
+            print(f"  id={r['id']:>5}  {(r['name'] or '')[:60]}")
+
+    bad = list(conn.execute(
+        "SELECT v.id, v.name, p.probe_error FROM videos v "
+        "JOIN video_probes p ON v.id = p.video_id "
+        "WHERE p.probe_status = 'error' LIMIT 20"
+    ))
+    if bad:
+        print(f"\n=== probe errors (first 20 of {counts['error']}) ===")
+        for b in bad:
+            print(f"  id={b['id']:>5}  {b['probe_error']}  "
+                  f"({(b['name'] or '')[:40]})")
+
+    conn.close()
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -901,6 +1126,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("sync", help="refetch API, diff, download new videos")
     sp.add_argument("--concurrency", type=int, default=4)
     sp.set_defaults(func=cmd_sync)
+
+    sp = sub.add_parser("probe", help="run ffprobe on every file, save codec metadata")
+    sp.add_argument("--full", action="store_true",
+                    help="re-probe files even if already probed")
+    sp.add_argument("--workers", type=int, default=4)
+    sp.set_defaults(func=cmd_probe)
 
     sp = sub.add_parser("verify", help="re-hash every file, detect corruption")
     sp.add_argument("--full", action="store_true",
